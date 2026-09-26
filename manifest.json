@@ -1,0 +1,12 @@
+{
+  "id": "typora-community-plugin.resource-manager",
+  "name": "Resource Manager",
+  "description": "Scan the mounted folder or the current file: find resources (e.g. images in ./images or ./assets) that are NOT referenced by any Markdown, and references whose local files are MISSING. Ported from obgnail/typora_plugin resource_manager.",
+  "author": "obgnail, ported to typora-community-plugin",
+  "authorUrl": "https://github.com/obgnail/typora_plugin",
+  "repo": "local/typora-plugin-resource-manager",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "minCoreVersion": "2.8.2",
+  "platforms": ["win32", "linux", "darwin"]
+}
