@@ -1,4 +1,4 @@
-# Resource Manager（资源管理）for typora-community-plugin
+# Resource Manager for typora-community-plugin
 
 [English](README.en.md) | 简体中文
 
