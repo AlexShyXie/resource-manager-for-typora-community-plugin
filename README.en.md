@@ -4,20 +4,52 @@ English | [简体中文](README.md)
 
 A port of the `resource_manager` plugin from [obgnail/typora_plugin](https://github.com/obgnail/typora_plugin) to the [typora-community-plugin](https://github.com/typora-community-plugin/typora-community-plugin) ecosystem. Functionality is identical to the original:
 
-Scans all Markdown and local resource files (images, etc.) in the **currently opened folder** (mounted folder) of Typora, and produces two lists:
+## Overview
 
-1. **Unreferenced resources** (redundant files): exist on disk, but are not referenced by any `.md` file (including subdirectories such as `images/`, `assets/`)
-2. **Referenced but missing resources** (lost files): referenced in a `.md` file, but do not exist locally
+Scans the **currently opened folder** (mounted folder) of Typora and produces two lists:
+
+1. **Unreferenced resources** (redundant files): exist on disk, but are not referenced by any Markdown document
+2. **Referenced but missing resources** (lost files): referenced in a document, but do not exist locally
+
+Scan scope:
+
+- **Recursively traverses all subdirectories** — not limited to specific directories like `images/` or `assets/`; only folders whose names are in the ignore list are skipped (default: `.git`, `.idea`, `.typora`, `node_modules`)
+- **Markdown documents** (source of references): 10 extensions by default (`md`, `markdown`, `mdown`, etc.)
+- **Resource files** (managed objects): 12 image extensions by default (`jpg`, `png`, `gif`, `svg`, etc.)
+- Both extension lists are configurable in settings (e.g. add `mp3`, `mp4`)
 
 Supported operations: toggle image preview, reveal file in file explorer, delete (to recycle bin), export JSON report.
 
-## Installation (Manual)
+### Detection Rules & Security Boundaries
 
-1. Close Typora
-2. Copy the entire `resource-manager` folder to:
+- Markdown image syntax `![alt](uri)` and HTML `<img src="...">` (both toggleable in settings)
+- Web images (`http/https/ftp`) and embedded images (`data:`, `blob:`) are **excluded** from local existence checks
+- `<>` wrapping in `uri`, URL percent-encoding (e.g. `%20` for space), and `?query` suffixes are decoded/stripped before parsing
+- References starting with `/` or `\` are resolved **relative to the directory of the md file** (Typora's root-relative semantics, same as the original)
+- Same-named references are matched **case-insensitively** (Windows file system behavior)
+
+- **Zero background components**: no listener processes, no timers, no file watchers; directories are only read when you trigger the command
+- **Read-only scanning**: scanning itself writes no files; deletion goes to the recycle bin and requires confirmation; export requires manually choosing a path
+- Does not follow symbolic links (prevents directory loops), traversal depth limit of 40, scan timeout of 180 seconds (automatically aborts with a notification on timeout)
+
+## Installation
+
+### Prerequisites
+
+Install and enable the Typora Community Plugin Framework.
+Project: https://github.com/typora-community-plugin/typora-community-plugin
+
+### Option 1: Community Plugin Marketplace (Recommended)
+
+Open Typora → go to the typora-community-plugin preferences → **Marketplace**, search for `Resource Manager`, then install **and enable** it.
+
+### Option 2: Manual Installation
+
+1. Download the latest `plugin.zip` from [Releases](https://github.com/AlexShyXie/resource-manager-for-typora-community-plugin/releases) and extract it
+2. Put the extracted files into a `resource-manager` folder and copy it to:
    - Global: `C:\Users\<you>\.typora\community-plugins\plugins\resource-manager\`
    - Or current vault only: `<vault>\.typora\plugins\resource-manager\`
-3. Open Typora → Settings (File → Preferences → Plugins/Community Plugins) → **Installed Plugins** → check `Resource Manager` to enable it
+3. Open Typora → go to the typora-community-plugin preferences → **Installed Plugins** → check `Resource Manager` to enable it
 
 > Requires typora-community-plugin ≥ 2.8.2, Typora ≥ 1.5.0.
 
@@ -28,14 +60,6 @@ Supported operations: toggle image preview, reveal file in file explorer, delete
 - A notification in the bottom-right corner shows progress during scanning; results are displayed in a popup (two tables)
 - Deleting a file moves it to the system recycle bin (recoverable, not permanent deletion), with a confirmation dialog by default (you can check "Don't ask again")
 - Click `Export Report` at the bottom to generate a JSON file at a location of your choice
-
-## Detection Rules (Same as the Original)
-
-- Markdown image syntax `![alt](uri)` and HTML `<img src="...">` (both toggleable in settings)
-- Web images (`http/https/ftp`) and embedded images (`data:`, `blob:`) are excluded from local existence checks
-- `<>` wrapping in `uri`, URL percent-encoding (e.g. `%20` for space), and `?query` suffixes are decoded/stripped before parsing
-- References starting with `/` or `\` are resolved **relative to the directory of the md file** (Typora's root-relative semantics, same as the original)
-- Same-named references are matched **case-insensitively** (Windows file system behavior)
 
 ## Settings
 
@@ -60,21 +84,4 @@ Settings → Installed Plugins → Resource Manager:
 | Integration with the `asset_root_redirect` plugin (front matter `typora-root-url`) | Not supported | No equivalent plugin in the tcp ecosystem |
 | fast-table with column sorting | No sorting | Tables are hand-drawn DOM, keeping the codebase auditable |
 
-## Security Boundaries (Self-imposed Implementation Constraints)
-
-- **Zero background components**: no listener processes, no timers, no file watchers; directories are only read when you trigger the command
-- **Read-only scanning**: scanning itself writes no files; deletion goes to the recycle bin and requires confirmation; export requires manually choosing a path
-- Single-file `main.js` (~760 lines, no dependencies, no bundling or obfuscation), directly auditable
-- Does not follow symbolic links (prevents directory loops), traversal depth limit of 40, scan timeout of 180 seconds (automatically aborts with a notification on timeout)
-
-## File Structure
-
-```
-resource-manager/
-├── manifest.json   # Plugin metadata
-├── main.js         # All logic (ES Module, takes API from core global object)
-├── style.css       # Popup and table styles
-└── README.md       # This file
-```
-
-Ported from: obgnail/typora_plugin (MIT License). The image extraction regex comes from that repository (noted in comments).
+Ported from: obgnail/typora_plugin (MIT License). Tested on Windows 10 only.
