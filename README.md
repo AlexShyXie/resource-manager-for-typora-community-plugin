@@ -22,9 +22,12 @@
 
 ### 识别规则与安全边界
 
-- Markdown 图片语法 `![alt](uri)` 与 HTML `<img src="...">`（均可在设置中开关）
+- Markdown 图片语法 `![alt](uri)`、HTML `<img src="...">` 与 Obsidian 风格 Wikilink `![[图片]]` / `[[图片]]`（均可在设置中开关）
+- Wikilink 目标会剥离 `|别名`、`|尺寸`、`#锚点` 后缀，且**不做 URL 解码**（Wikilink 文件名可合法包含 `%`）；目标文件名含 `[` `]` 时同样可识别（Windows 合法文件名字符）
+- 无扩展名的 Wikilink（如 `![[cat]]`、`![[cat|300]]`）会按已知资源扩展名在全库补全匹配，同名候选全部计为已引用；若补全不到任何资源，则视为普通笔记链接，不参与统计（避免把断链笔记灌进缺失清单）
+- 未写路径的 Wikilink 按文件名在整个库内回退匹配（保守策略，避免误删）；**写了路径**的 Wikilink 按 vault 根相对（Obsidian 语义）优先解析、md 相对兜底，两者都找不到才计入缺失——路径写错不会被其他目录的同名文件掩盖
 - 网络图（`http/https/ftp`）与内嵌图（`data:`、`blob:`）**不参与**本地存在性检测
-- `uri` 中的 `<>` 包裹、URL 百分号编码（如 `%20` 空格）、`?query` 后缀会被解码/剥离后解析
+- `uri` 中的 `<>` 包裹、URL 百分号编码（如 `%20` 空格）、`?query` 后缀会被解码/剥离后解析；含裸 `%` 无法解码时回退用原串解析（宁可报缺失也不误判为未引用）；`#` 既可能是 SVG 锚点（`icon.svg#part`）也可能是字面文件名，先按原串匹配扩展名，失败后再剥掉 `#` 尾部重试
 - 以 `/` 或 `\` 开头的引用按**相对 md 所在目录**解析（Typora 的 root-relative 语义，与原版一致）
 - 同名引用按**大小写不敏感**匹配（Windows 文件系统行为）
 
@@ -69,7 +72,7 @@
 | 资源扩展名 | 参与扫描的资源文件扩展名（空格/逗号分隔） | `jpg jpeg png gif svg bmp webp ico tiff jfif avif` |
 | Markdown 扩展名 | 被解析的文档扩展名 | `md markdown mdown mmd rmarkdown mkd mdwn mdtxt rmd mdtext` |
 | 忽略的目录名 | 遍历时跳过的目录（按目录名） | `.git .idea node_modules .typora` |
-| Markdown / HTML 语法开关 | 图片语法识别范围 | 均开启 |
+| Markdown / HTML / Wikilink 语法开关 | 图片语法识别范围 | 均开启 |
 
 ## 与 obgnail 原版的差异
 
@@ -77,7 +80,7 @@
 | --- | --- | --- |
 | `fs.remove` 永久删除 | `fs.trash` 移入回收站 | 更安全；core 的跨平台回收站 API |
 | 引用比较大小写敏感 | 大小写不敏感 | Windows 下 `IMG.png`/`img.png` 是同一文件，避免误报"缺失" |
-| 引用 vault 外绝对路径直接判缺失 | 先 `fs.exists` 复核再判定 | 减少误报 |
+| 不支持 wikilink | 支持 `![[...]]` / `[[...]]`（含无扩展名补全、basename 全库回退、带路径根相对解析） | Obsidian 迁移/混用库常见写法，不识别会导致误报"未引用"而诱导误删 |
 | 资源扩展名默认含空扩展名、`.gif!large`、音视频 | 默认纯图片格式 | 更保守；需要时可在设置中自行添加 |
 | 导出 json / yaml / toml | 仅 JSON | 单文件零依赖，砍掉 YAML/TOML 序列化器 |
 | 支持与 `asset_root_redirect` 插件联动（front matter `typora-root-url`） | 不支持 | tcp 生态无对应插件 |

@@ -56,6 +56,7 @@ const LOCALES = {
     settings: {
       grammarMd: { name: "Markdown image syntax", desc: "Detect `![alt](uri)`" },
       grammarHtml: { name: "HTML image syntax", desc: "Detect `<img src=\"uri\">`" },
+      grammarWiki: { name: "Wikilink syntax (Obsidian-style)", desc: "Detect `![[image]]` embeds and `[[image]]` references" },
       resourceExts: {
         name: "Resource extensions",
         desc: "Space/comma separated, with or without leading dot. Files with these extensions are treated as managed resources (images by default).",
@@ -104,6 +105,7 @@ const LOCALES = {
     settings: {
       grammarMd: { name: "Markdown 图片语法", desc: "识别 `![alt](uri)`" },
       grammarHtml: { name: "HTML 图片语法", desc: "识别 `<img src=\"uri\">`" },
+      grammarWiki: { name: "Wikilink 语法（Obsidian 风格）", desc: "识别 `![[图片]]` 嵌入与 `[[图片]]` 引用" },
       resourceExts: {
         name: "资源扩展名",
         desc: "空格或逗号分隔，是否带点均可。这些扩展名的文件视为被管理的资源（默认为常见图片格式，可自行加入 mp3/mp4 等）。",
@@ -124,10 +126,12 @@ LOCALES["zh"] = LOCALES["zh-cn"];
 
 /* defaults aligned with obgnail/typora_plugin settings.default.toml
  * (minus the empty-string extension and `.gif!large` corner cases;
- * audio/video extensions left out — add them in settings if needed) */
+ * audio/video extensions left out — add them in settings if needed).
+ * findWikilinkImages is an addition beyond upstream. */
 const DEFAULT_SETTINGS = {
   findMarkdownImages: true,
   findHtmlImages: true,
+  findWikilinkImages: true,
   resourceExts: ".jpg .jpeg .png .gif .svg .tiff .ico .webp .bmp .jfif .avif",
   markdownExts: ".md .markdown .mdown .mmd .rmarkdown .mkd .mdwn .mdtxt .rmd .mdtext",
   ignoreFolders: ".git .idea .typora node_modules",
@@ -144,9 +148,10 @@ const escapeHtml = (s) =>
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 
-/** unified comparison key: forward slashes + lower case
- *  (Windows FS is case-insensitive; MD references often mistype the case) */
-const normKey = (p) => p.replace(/\\/g, "/").toLowerCase();
+/** unified comparison key: forward slashes + NFC + lower case
+ *  (Windows FS is case-insensitive; MD references often mistype the case;
+ *  macOS stores filenames in NFD while md text is usually NFC) */
+const normKey = (p) => p.replace(/\\/g, "/").normalize("NFC").toLowerCase();
 
 /** node path.resolve(base, rel) replacement built on core `path` */
 const resolvePath = (baseDir, p) => (path.isAbsolute(p) ? p : path.join(baseDir, p));
@@ -169,12 +174,20 @@ const showInFinder = (p) => {
 };
 
 /* --------------------------------------------------------------------------
- * image extraction — regexes ported verbatim from obgnail (they originate
- * from Typora's own File.editor.brush rules, see upstream comment)
+ * image extraction — MD/HTML regexes ported verbatim from obgnail (they
+ * originate from Typora's own File.editor.brush rules, see upstream comment)
  * ------------------------------------------------------------------------ */
 // eslint-disable-next-line no-control-regex
 const MD_IMG_REGEX = /(\!\[((?:\[[^\]]*\]|[^\[\]])*)\]\()(<?((?:\([^)]*\)|[^()])*?)>?[ \t]*((['"])((?:.|\n)*?)\6[ \t]*)?)(\)(?:\s*{([^{}\(\)]*)})?)/g;
 const HTML_IMG_REGEX = /<img\s+[^>\n]*?src=(["'])([^"'\n]+)\1[^>\n]*>/gi;
+// wikilink — NOT from upstream (it has no wikilink support); add-on here.
+// group 1: optional "!" (embed) / group 2: target, possibly `path|alias|300`
+// NOTE: the target charset only excludes newlines. Obsidian itself forbids
+// `[`/`]` in filenames, but a Typora vault's files may legitimately contain
+// them (e.g. browser-saved `shot[1].png`) — excluding them here would drop
+// the reference and falsely mark the file as unused (unsafe-delete
+// direction). The lazy `+?` still pairs `[[a]] [[b]]` correctly.
+const WIKILINK_REGEX = /(!?)\[\[([^\n]+?)\]\]/g;
 
 const isNetworkUri = (uri) => /^(https?|ftp):\/\//.test(uri);
 const isSpecialUri = (uri) => /^(blob|chrome-blob|moz-blob|data):[^/]/.test(uri);
@@ -190,6 +203,13 @@ function extractImageUris(text, { markdown, html }) {
   return uris;
 }
 
+/** wikilink targets (raw, may still contain `|alias` / `#fragment`) */
+function extractWikilinkTargets(text) {
+  const targets = [];
+  for (const m of text.matchAll(WIKILINK_REGEX)) targets.push(m[2]);
+  return targets;
+}
+
 /** strip <>, url-decode, drop ?query, drop leading / or \ (same as upstream) */
 function normalizeImageUri(uri) {
   try {
@@ -197,19 +217,32 @@ function normalizeImageUri(uri) {
     uri = decodeURIComponent(uri).split("?")[0];
     return uri.replace(/^\s*([\\/])/, "");
   } catch (e) {
-    console.warn("[resource-manager] bad image uri:", uri, e);
-    return null;
+    // a bare `%` in the filename breaks decodeURIComponent. Return the raw
+    // (undecoded) uri instead of dropping the reference entirely: a dropped
+    // reference falsely marks the file as unused (the unsafe-delete
+    // direction), an unresolvable one merely reports as missing.
+    console.warn("[resource-manager] undecodable image uri, using raw:", uri, e);
+    return uri.split("?")[0].replace(/^\s*([\\/])/, "");
   }
+}
+
+/** wikilink target: deliberately NOT url-decoded (wikilink filenames may
+ *  legitimately contain `%`, which would break decodeURIComponent);
+ *  just strip the `|alias` / `|300` suffix, `#fragment` and whitespace */
+function normalizeWikilinkTarget(target) {
+  return target.split("|")[0].split("#")[0].trim().replace(/^\s*([\\/])/, "");
 }
 
 /* --------------------------------------------------------------------------
  * walker (replaces obgnail utils.walkDir: BFS, serial, no symlink chase)
  * ------------------------------------------------------------------------ */
-async function walkDir(root, { ignoreFolders, onFile }) {
+async function walkDir(root, { ignoreFolders, onFile, isAborted }) {
   const ignore = new Set(ignoreFolders);
   let scanned = 0;
   const queue = [{ dir: root, depth: 0 }];
   while (queue.length) {
+    // cooperative cancellation (scan timeout), checked per directory
+    if (isAborted && isAborted()) return scanned;
     const { dir, depth } = queue.shift();
     if (depth > MAX_DEPTH) continue;
     let names;
@@ -264,10 +297,17 @@ class ResourceScanner {
     return {
       markdown: !!this.settings.get("findMarkdownImages"),
       html: !!this.settings.get("findHtmlImages"),
+      wikilink: !!this.settings.get("findWikilinkImages"),
     };
   }
 
-  async _referencedImages(mdPath, resourceExts) {
+  /**
+   * Extract locally-resolvable resource paths referenced by one md file.
+   * @param {Map} basenameIndex  normKey(basename) -> [abs paths in vault]
+   * @param {Map} inFolder       normKey(full path) -> original path (disk)
+   * @param {string} root        vault root (Obsidian wikilinks are root-relative)
+   */
+  async _referencedImages(mdPath, resourceExts, basenameIndex, inFolder, root) {
     let text;
     try {
       text = await fs.readText(mdPath);
@@ -282,8 +322,61 @@ class ResourceScanner {
     for (const uri of uris) {
       const img = normalizeImageUri(uri);
       if (!img || isNetworkUri(img) || isSpecialUri(img)) continue;
-      if (!resourceExts.has(path.extname(img).toLowerCase())) continue;
-      resolved.push(resolvePath(mdDir, img));
+      // `#` is ambiguous: an SVG fragment identifier (`icon.svg#part`) or a
+      // literal filename character (Typora writes those raw). Accept the
+      // raw uri when its extension matches, else retry with the `#`-tail
+      // stripped — dropping the reference would falsely mark the file as
+      // unused (the unsafe-delete direction).
+      let eff = img;
+      if (!resourceExts.has(path.extname(eff).toLowerCase())) {
+        const stripped = eff.split("#")[0];
+        if (stripped === eff || !resourceExts.has(path.extname(stripped).toLowerCase())) continue;
+        eff = stripped;
+      }
+      resolved.push(resolvePath(mdDir, eff));
+    }
+    if (flags.wikilink) {
+      for (const raw of extractWikilinkTargets(text)) {
+        const target = normalizeWikilinkTarget(raw);
+        if (!target || isNetworkUri(target) || isSpecialUri(target)) continue;
+        if (!/[\\/]/.test(target)) {
+          // ---- bare filename (no path separators) ----
+          // Obsidian-style vault-wide resolution: mark EVERY same-basename
+          // candidate as referenced — conservative, avoids false "unused"
+          // deletions. Extension-less links (`![[cat]]`, `![[cat|300]]`)
+          // are completed against every known resource extension; links
+          // that complete to nothing are treated as note references and
+          // skipped (they would otherwise flood the missing report).
+          const base = path.basename(target);
+          if (!path.extname(base)) {
+            let hit = false;
+            for (const e of resourceExts) {
+              const cands = basenameIndex.get(normKey(base + e));
+              if (cands && cands.length) {
+                resolved.push(...cands);
+                hit = true;
+              }
+            }
+            if (!hit) continue;
+          } else {
+            if (!resourceExts.has(path.extname(base).toLowerCase())) continue;
+            const cands = basenameIndex.get(normKey(base));
+            if (cands && cands.length) resolved.push(...cands);
+            else resolved.push(resolvePath(mdDir, target)); // no candidate → reports as missing
+          }
+        } else {
+          // ---- typed path ----
+          // Wikilinks containing a path are vault-root-relative under
+          // Obsidian semantics; hand-written Typora-style ones are usually
+          // md-relative. Prefer whichever exists in the vault (root first);
+          // when neither exists, record the md-relative resolution so the
+          // broken link reports as missing instead of being masked by an
+          // unrelated same-basename file elsewhere in the vault.
+          const byRoot = resolvePath(root, target);
+          const byMd = resolvePath(mdDir, target);
+          resolved.push(inFolder.has(normKey(byRoot)) ? byRoot : byMd);
+        }
+      }
     }
     return resolved;
   }
@@ -291,29 +384,39 @@ class ResourceScanner {
   /**
    * @param {string} root          scan root = mounted folder (vault path)
    * @param {function} onProgress  optional (count) => void
+   * @param {function} isAborted   optional () => boolean — cooperative cancel (timeout)
    * @returns {unused: string[], missing: {path, refs: string[]}[], stats: {}}
+   *          (or null when aborted mid-scan)
    */
-  async scan(root, onProgress) {
+  async scan(root, onProgress, isAborted) {
     const resourceExts = this._extSet("resourceExts");
     const markdownExts = this._extSet("markdownExts");
     const ignoreFolders = this._folderSet();
 
     const inFolder = new Map(); // normKey -> original path (case-insensitive compare)
+    const basenameIndex = new Map(); // normKey(basename) -> [abs paths] (wikilink fallback)
     const mdFiles = [];
 
     await walkDir(root, {
       ignoreFolders,
+      isAborted,
       onFile: (full, name) => {
         const ext = path.extname(name).toLowerCase();
-        if (resourceExts.has(ext)) inFolder.set(normKey(full), full);
-        else if (markdownExts.has(ext)) mdFiles.push(full);
+        if (resourceExts.has(ext)) {
+          inFolder.set(normKey(full), full);
+          const base = normKey(path.basename(name));
+          let bucket = basenameIndex.get(base);
+          if (!bucket) basenameIndex.set(base, (bucket = []));
+          bucket.push(full);
+        } else if (markdownExts.has(ext)) mdFiles.push(full);
         if (onProgress) onProgress(inFolder.size + mdFiles.length);
       },
     });
 
     const referenced = new Map(); // normKey -> {path, refs: string[]}
     for (const mdPath of mdFiles) {
-      const images = await this._referencedImages(mdPath, resourceExts);
+      if (isAborted && isAborted()) return null; // timed out; the race already rejected
+      const images = await this._referencedImages(mdPath, resourceExts, basenameIndex, inFolder, root);
       for (const img of images) {
         const key = normKey(img);
         let entry = referenced.get(key);
@@ -321,7 +424,9 @@ class ResourceScanner {
           entry = { path: img, refs: [] };
           referenced.set(key, entry);
         }
-        entry.refs.push(mdPath);
+        // the same md may cite the same image twice (md syntax + wikilink,
+        // or a repeated link) — dedupe so "referenced by" stays readable
+        if (!entry.refs.includes(mdPath)) entry.refs.push(mdPath);
       }
     }
 
@@ -428,7 +533,7 @@ class ReportModal extends Modal {
     const thead = document.createElement("thead");
     thead.innerHTML =
       "<tr><th>" + escapeHtml(t.colNo) + "</th>" +
-      (hasOps ? "<th>" + escapeHtml(t.colPreview) + "</th>" : "") +
+      (hasOps ? '<th class="rm-preview">' + escapeHtml(t.colPreview) + "</th>" : "") +
       "<th>" + escapeHtml(t.colPath) + "</th>" +
       (hasOps ? "<th>" + escapeHtml(t.colOps) + "</th>" : "<th>" + escapeHtml(t.colRefBy) + "</th>") +
       "</tr>";
@@ -446,9 +551,12 @@ class ReportModal extends Modal {
     const tr = document.createElement("tr");
     const idx = document.createElement("td");
     idx.className = "rm-idx";
+    // th and td carry `rm-preview` so the whole column collapses under
+    // .rm-no-preview (see style.css); the img itself stays classless so
+    // the `.rm-preview img` rules (max-width/max-height) keep applying
     const preview = document.createElement("td");
+    preview.className = "rm-preview";
     const img = document.createElement("img");
-    img.className = "rm-preview";
     img.loading = "lazy";
     img.src = toFileURL(p);
     img.alt = p;
@@ -656,6 +764,14 @@ class ResourceManagerSettingTab extends SettingTab {
       });
     });
     this.addSetting((setting) => {
+      setting.addName(t.grammarWiki.name);
+      setting.addDescription(t.grammarWiki.desc);
+      setting.addCheckbox((checkbox) => {
+        checkbox.checked = !!plugin.settings.get("findWikilinkImages");
+        checkbox.onclick = () => plugin.settings.set("findWikilinkImages", checkbox.checked);
+      });
+    });
+    this.addSetting((setting) => {
       setting.addName(t.resourceExts.name);
       setting.addDescription(t.resourceExts.desc);
       setting.addTextArea((input) => {
@@ -702,7 +818,7 @@ class ResourceManagerPlugin extends Plugin {
   onload() {
     this.registerSettings(new PluginSettings(this.app, this.manifest, { version: 1 }));
     this.settings.setDefault(DEFAULT_SETTINGS);
-    this.scanner = new ResourceScanner(this.settings, this.i18n);
+    this.scanner = new ResourceScanner(this.settings);
 
     this.registerCommand({
       id: "scan-folder",
@@ -734,15 +850,26 @@ class ResourceManagerPlugin extends Plugin {
         if (content) content.textContent = t.scanning.replace("{n}", n);
       }
     };
+    // cooperative abort: the flag flips when the timer fires so the walker
+    // actually stops reading directories — Promise.race alone only stops
+    // *waiting*, the scan would keep burning IO in the background. The
+    // losing promise's eventual rejection is still absorbed by the race
+    // itself, so no unhandled rejection can leak.
+    let timedOut = false;
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error("timeout"));
+      }, SCAN_TIMEOUT_MS);
+    });
     try {
-      // note: Promise.race only stops *waiting* on timeout — the losing
-      // promise's eventual rejection is still absorbed by race itself,
-      // so no unhandled rejection can leak from here
-      const timeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("timeout")), SCAN_TIMEOUT_MS)
-      );
-      const result = await Promise.race([this.scanner.scan(root, tick), timeout]);
+      const result = await Promise.race([
+        this.scanner.scan(root, tick, () => timedOut),
+        timeout,
+      ]);
       notice.close();
+      if (!result) return; // aborted mid-scan; the timeout path already notified
       if (result.stats.unused === 0 && result.stats.missing === 0) {
         Notice.success(t.allClean);
         return;
@@ -754,6 +881,8 @@ class ResourceManagerPlugin extends Plugin {
       notice.close();
       console.error("[resource-manager] scan failed:", e);
       Notice.error(t.errScan + ": " + (e && e.message ? e.message : e));
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
