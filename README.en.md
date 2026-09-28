@@ -6,10 +6,13 @@ A port of the `resource_manager` plugin from [obgnail/typora_plugin](https://git
 
 ## Overview
 
-Scans the **currently opened folder** (mounted folder) of Typora and produces two lists:
+Works on the **currently opened folder** (mounted folder) of Typora and provides three commands (all triggerable from the `F1` command palette):
 
-1. **Unreferenced resources** (redundant files): exist on disk, but are not referenced by any Markdown document
-2. **Referenced but missing resources** (lost files): referenced in a document, but do not exist locally
+1. **Scan mounted folder** (`scan-folder`, hotkey `Ctrl+Alt+R`): produces two lists
+   - **Unreferenced resources** (redundant files): exist on disk, but are not referenced by any Markdown document
+   - **Referenced but missing resources** (lost files): referenced in a document, but do not exist locally
+2. **List resources referenced by multiple notes** (`find-shared`): a list of resources referenced by **2 or more** Markdown documents (multiple references within the same note count only once), sorted by referencing-note count in descending order, with preview and JSON export. **No filtering by file existence** — resources referenced by multiple notes but missing on disk are listed as well, with a "missing" badge appended after the path (badge text color follows the theme, clearly readable in both light and dark themes). (The two commands have separate duties: use the scan command above to find missing-file issues, while this command only reports reference relationships; in the exported JSON, missing entries carry `exists: false`)
+3. **Check current file's attachment references** (`check-current`): based on the **currently opened md file** — lists every local attachment it references, marked either as "referenced only by this note" (deleting/moving/replacing it won't affect other notes) or "referenced by N other notes" (with the specific list attached); attachments referenced but missing on disk are listed as usual, also with a "missing" badge. Useful for impact assessment before modifying images in the current note; the exported JSON is split into `shared` / `exclusive` sections (the current file must be saved inside the mounted folder; dedicated notifications are shown if it is unsaved, outside the vault, not an md file, or located in an ignored directory)
 
 Scan scope:
 
@@ -18,7 +21,7 @@ Scan scope:
 - **Resource files** (managed objects): 12 image extensions by default (`jpg`, `png`, `gif`, `svg`, etc.)
 - Both extension lists are configurable in settings (e.g. add `mp3`, `mp4`)
 
-Supported operations: toggle image preview, reveal file in file explorer, delete (to recycle bin), export JSON report.
+Supported operations: toggle image preview, reveal file in file explorer, delete (to recycle bin), export JSON report; text inside the panel (paths, reference lists, summary lines) can be selected and copied directly — no need to export JSON first.
 
 ### Detection Rules & Security Boundaries
 
@@ -39,6 +42,7 @@ Supported operations: toggle image preview, reveal file in file explorer, delete
 ### Prerequisites
 
 Install and enable the Typora Community Plugin Framework.
+
 Project: https://github.com/typora-community-plugin/typora-community-plugin
 
 ### Option 1: Community Plugin Marketplace (Recommended)
@@ -69,21 +73,21 @@ Settings → Installed Plugins → Resource Manager:
 
 | Option                                    | Description                                                  | Default                                                     |
 | ----------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------- |
-| Resource extensions                       | File extensions included in the scan (space/comma separated) | `jpg jpeg png gif svg bmp webp ico tiff jfif avif`          |
-| Markdown extensions                       | Document extensions to parse                                 | `md markdown mdown mmd rmarkdown mkd mdwn mdtxt rmd mdtext` |
-| Ignored directories                       | Directories skipped during traversal (by directory name)     | `.git .idea node_modules .typora`                           |
-| Markdown / HTML / Wikilink syntax toggles | Scope of image syntax detection                              | All enabled                                                 |
+| Resource extensions                       | File extensions included in the scan (space/comma separated) | `jpg jpeg png gif svg bmp webp ico tiff jfif avif`           |
+| Markdown extensions                       | Document extensions to parse                                 | `md markdown mdown mmd rmarkdown mkd mdwn mdtxt rmd mdtext`  |
+| Ignored directories                       | Directories skipped during traversal (by directory name)     | `.git .idea node_modules .typora`                            |
+| Markdown / HTML / Wikilink syntax toggles | Scope of image syntax detection                              | All enabled                                                  |
 
 ## Differences from obgnail's Original
 
-| Original                                                     | This Port                                                    | Reason                                                       |
-| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| `fs.remove` permanent deletion                               | `fs.trash` move to recycle bin                               | Safer; core's cross-platform recycle bin API                 |
-| Case-sensitive reference comparison                          | Case-insensitive                                             | On Windows, `IMG.png`/`img.png` are the same file; avoids false "missing" reports |
-| No wikilink support                                          | Supports `![[...]]` / `[[...]]` (with extension-less completion, vault-wide basename fallback, and root-relative path resolution) | Common in Obsidian-migrated / mixed-tool vaults; without it, wikilink-referenced images are falsely reported as "unused", tempting wrong deletions |
-| Default resource extensions include empty extensions, `.gif!large`, audio/video | Default is image formats only                                | More conservative; can be added in settings if needed        |
-| Export json / yaml / toml                                    | JSON only                                                    | Single-file zero-dependency; dropped YAML/TOML serializers   |
-| Integration with the `asset_root_redirect` plugin (front matter `typora-root-url`) | Not supported                                                | No equivalent plugin in the tcp ecosystem                    |
-| fast-table with column sorting                               | No sorting                                                   | Tables are hand-drawn DOM, keeping the codebase auditable    |
+| Original                                                                          | This Port                                                                                                                         | Reason                                                                                                                            |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `fs.remove` permanent deletion                                                     | `fs.trash` move to recycle bin                                                                                                    | Safer; core's cross-platform recycle bin API                                                                                      |
+| Case-sensitive reference comparison                                                | Case-insensitive                                                                                                                  | On Windows, `IMG.png`/`img.png` are the same file; avoids false "missing" reports                                                 |
+| No wikilink support                                                                | Supports `![[...]]` / `[[...]]` (with extension-less completion, vault-wide basename fallback, and root-relative path resolution) | Common in Obsidian-migrated / mixed-tool vaults; without it, wikilink-referenced images are falsely reported as "unused", tempting wrong deletions |
+| Default resource extensions include empty extensions, `.gif!large`, audio/video    | Default is image formats only                                                                                                     | More conservative; can be added in settings if needed                                                                             |
+| Export json / yaml / toml                                                          | JSON only                                                                                                                         | Single-file zero-dependency; dropped YAML/TOML serializers                                                                        |
+| Integration with the `asset_root_redirect` plugin (front matter `typora-root-url`) | Not supported                                                                                                                     | No equivalent plugin in the tcp ecosystem                                                                                         |
+| fast-table with column sorting                                                     | No sorting                                                                                                                        | Tables are hand-drawn DOM, keeping the codebase auditable                                                                         |
 
 Ported from: obgnail/typora_plugin (MIT License). Tested on Windows 10 only.

@@ -167,3 +167,20 @@
   background: rgba(var(--typ-color-gray-1), 0.18);
   color: var(--typ-text-color);
 }
+
+/* ---- text selection ---- */
+/* Typora's global UI css disables user-select across the app chrome.
+   Re-enable it inside the report modal so paths / ref lists can be
+   copied directly instead of exporting JSON. Buttons (and the header,
+   which may be a drag handle) stay unselectable so double-clicks never
+   turn into accidental text selections. */
+.typ-modal.typ-resource-manager .typ-modal__body,
+.typ-modal.typ-resource-manager .typ-modal__footer {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.typ-modal.typ-resource-manager .rm-btn {
+  user-select: none;
+  -webkit-user-select: none;
+}
