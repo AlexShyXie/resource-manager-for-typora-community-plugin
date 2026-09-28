@@ -149,22 +149,21 @@
   margin-right: auto;
 }
 
-/* ---- shared-references view (find-shared) ---- */
+/* ---- shared-references view (find-shared & check-current) ---- */
 
-/* rows whose file is missing on disk: red tint so they stand out
-   (applies to both find-shared and check-current views) */
-tr.rm-row-missing .rm-path,
-tr.rm-row-missing .rm-ref {
-  color: rgba(var(--typ-color-red-1), 0.85);
-}
-
+/* missing-on-disk rows keep the theme's DEFAULT text color: theme reds
+   (Typora light themes render --typ-color-red-1 as orange) proved
+   unreadable on light backgrounds. The signal is carried by the small
+   neutral badge below — same border/text variables as .rm-btn, which
+   have already proven theme-safe */
 .rm-missing-tag {
   display: inline-block;
   margin-left: 0.35rem;
   padding: 0 0.3rem;
   font-size: 0.7rem;
   line-height: 1.3;
-  border: 1px solid rgba(var(--typ-color-red-1), 0.6);
+  border: 1px solid var(--typ-border-color);
   border-radius: 3px;
-  color: rgba(var(--typ-color-red-1), 0.9);
+  background: rgba(var(--typ-color-gray-1), 0.18);
+  color: var(--typ-text-color);
 }

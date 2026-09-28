@@ -530,8 +530,9 @@ class ResourceScanner {
    * resource the note cites lands in exactly one bucket:
    *   shared    — also cited by other notes (refs lists THOSE notes only)
    *   exclusive — cited by this note alone (refs is empty)
-   * Existence on disk is reported, not filtered (missing entries are
-   * tagged red in the modal), consistent with the find-shared semantics.
+   * Existence on disk is reported, not filtered (missing entries carry
+   * a neutral "missing" badge in the modal), consistent with the
+   * find-shared semantics.
    * @param {string} mdPath path of the open md (case need not match the
    *                        walker's disk casing — compared via normKey)
    */
