@@ -6,6 +6,8 @@ A port of the `resource_manager` plugin from [obgnail/typora_plugin](https://git
 
 ## Overview
 
+> It is strongly recommended to use standard conventions: all references to images and attachments should be made using relative paths within the current note, placing them in the ‘images/’ or ‘assets/’ folder of the same note.
+
 Works on the **currently opened folder** (mounted folder) of Typora and provides three commands (all triggerable from the `F1` command palette):
 
 1. **Scan mounted folder** (`scan-folder`, hotkey `Ctrl+Alt+R`): produces two lists
