@@ -34,7 +34,7 @@ const LOCALES = {
     titleShared: "Resources referenced by multiple notes",
     cmdFindShared: "List resources referenced by multiple notes",
     noShared: "No resource is referenced by more than one note.",
-    missingTag: "missing",
+    missingTag: "missing⚠️",
     cmdCheckCurrent: "Check the current file's attachments against other notes",
     titleCurShared: "Attachments also referenced by other notes",
     titleCurExclusive: "Attachments referenced only by this note",
@@ -101,7 +101,7 @@ const LOCALES = {
     titleShared: "被多篇笔记引用的资源",
     cmdFindShared: "列出被多篇笔记引用的资源",
     noShared: "没有被多篇笔记同时引用的资源。",
-    missingTag: "缺失",
+    missingTag: "缺失⚠️",
     cmdCheckCurrent: "检查当前文件的附件是否被其他笔记引用",
     titleCurShared: "被其他笔记引用的附件",
     titleCurExclusive: "仅本文引用的附件",
@@ -820,7 +820,9 @@ class ReportModal extends Modal {
       footer.appendChild(b);
       return b;
     };
-    this._previewBtn = mk(t.previewOn, () => this._togglePreview());
+    // label states the ACTION the click performs (convention), not the
+    // current state: previews visible → "Hide previews" / 关闭预览
+    this._previewBtn = mk(this.showPreview ? t.previewOff : t.previewOn, () => this._togglePreview());
     mk(t.export, () => this._export());
     mk(t.close, () => this.close(), true);
   }
@@ -828,7 +830,7 @@ class ReportModal extends Modal {
   _togglePreview() {
     this.showPreview = !this.showPreview;
     this.modal.classList.toggle("rm-no-preview", !this.showPreview);
-    this._previewBtn.textContent = this.showPreview ? this.i18n.t.previewOn : this.i18n.t.previewOff;
+    this._previewBtn.textContent = this.showPreview ? this.i18n.t.previewOff : this.i18n.t.previewOn;
   }
 
   _locate(p) {
