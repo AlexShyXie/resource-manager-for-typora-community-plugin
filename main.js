@@ -8,11 +8,15 @@
  *   - core `Modal` + hand-rolled tables instead of fast-window/fast-table
  *   - `fs.trash()` (recycle bin) instead of permanent `fs.remove()`
  *
- * Single command (command palette: F1 / Ctrl+Alt+R):
- *   scan-folder — scan the whole mounted folder (vault), exactly like
- *   the original obgnail plugin:
+ * Three commands (command palette: F1):
+ *   scan-folder (Ctrl+Alt+R) — scan the whole mounted folder (vault),
+ *   exactly like the original obgnail plugin:
  *        • resources not referenced by any Markdown (unused / 多余)
  *        • references whose local file does not exist (missing / 缺失)
+ *   find-shared — list resources referenced by two or more Markdown
+ *   files, whether or not they still exist on disk (多笔记引用)
+ *   check-current — for every attachment of the CURRENT md, show which
+ *   other notes cite it too (当前文件附件共享分析)
  */
 
 const core = window[Symbol.for("typora-plugin-core@v2")];
@@ -27,6 +31,23 @@ const LOCALES = {
     cmdScanFolder: "Scan mounted folder for unused/missing resources",
     titleUnused: "Resources not referenced by any Markdown",
     titleMissing: "Referenced resources missing on disk",
+    titleShared: "Resources referenced by multiple notes",
+    cmdFindShared: "List resources referenced by multiple notes",
+    noShared: "No resource is referenced by more than one note.",
+    missingTag: "missing",
+    cmdCheckCurrent: "Check the current file's attachments against other notes",
+    titleCurShared: "Attachments also referenced by other notes",
+    titleCurExclusive: "Attachments referenced only by this note",
+    emptyCurShared: "No attachment is shared with other notes.",
+    emptyCurExclusive: "No attachment is exclusive to this note.",
+    onlyCurrent: "only this note",
+    noCurrentFile: "No file is open (or it has not been saved yet).",
+    noCurrentRefs: "The current file references no local resources.",
+    curNotMd: "The current file is not a Markdown file.",
+    curOutsideVault: "The current file is outside the mounted folder.",
+    curIgnored: "The current file is inside an ignored folder.",
+    curTitle: "Attachments of the current file",
+    statCurrent: "{n} attachments · {s} shared · {e} only here · {m} missing",
     colNo: "No.",
     colPreview: "Preview",
     colPath: "Path",
@@ -51,6 +72,7 @@ const LOCALES = {
     statScanned: "scanned {n} resources / {m} markdown files",
     emptyUnused: "No unused resources.",
     emptyMissing: "No missing references.",
+    emptyShared: "No resources referenced by multiple notes.",
     errScan: "Scan failed",
     errDelete: "Delete failed",
     settings: {
@@ -76,6 +98,23 @@ const LOCALES = {
     cmdScanFolder: "扫描挂载文件夹（未引用/缺失资源）",
     titleUnused: "未被任何 Markdown 引用的资源（多余文件）",
     titleMissing: "被引用但在本地不存在的资源（缺失文件）",
+    titleShared: "被多篇笔记引用的资源",
+    cmdFindShared: "列出被多篇笔记引用的资源",
+    noShared: "没有被多篇笔记同时引用的资源。",
+    missingTag: "缺失",
+    cmdCheckCurrent: "检查当前文件的附件是否被其他笔记引用",
+    titleCurShared: "被其他笔记引用的附件",
+    titleCurExclusive: "仅本文引用的附件",
+    emptyCurShared: "没有附件被其他笔记引用。",
+    emptyCurExclusive: "没有仅本文引用的附件。",
+    onlyCurrent: "仅本文",
+    noCurrentFile: "当前没有打开的文件（或文件尚未保存）。",
+    noCurrentRefs: "当前文件没有引用任何本地资源。",
+    curNotMd: "当前文件不是 Markdown 文件。",
+    curOutsideVault: "当前文件不在挂载文件夹内。",
+    curIgnored: "当前文件位于忽略目录中。",
+    curTitle: "当前文件的附件引用",
+    statCurrent: "{n} 个附件 · {s} 个共享 · {e} 个仅本文 · {m} 个缺失",
     colNo: "#",
     colPreview: "预览",
     colPath: "路径",
@@ -100,6 +139,7 @@ const LOCALES = {
     statScanned: "共扫描 {n} 个资源 / {m} 个 Markdown 文件",
     emptyUnused: "没有未引用的资源。",
     emptyMissing: "没有缺失的引用。",
+    emptyShared: "没有被多篇笔记引用的资源。",
     errScan: "扫描失败",
     errDelete: "删除失败",
     settings: {
@@ -385,8 +425,10 @@ class ResourceScanner {
    * @param {string} root          scan root = mounted folder (vault path)
    * @param {function} onProgress  optional (count) => void
    * @param {function} isAborted   optional () => boolean — cooperative cancel (timeout)
-   * @returns {unused: string[], missing: {path, refs: string[]}[], stats: {}}
-   *          (or null when aborted mid-scan)
+   * @returns {{root, scope, unused, missing, shared, stats}} where shared
+   *          lists {path, refs, exists} of resources cited by 2+ distinct
+   *          md files regardless of on-disk existence (or null when
+   *          aborted mid-scan)
    */
   async scan(root, onProgress, isAborted) {
     const resourceExts = this._extSet("resourceExts");
@@ -444,17 +486,83 @@ class ResourceScanner {
       if (!exists) missing.push(entry);
     }
 
+    // resources referenced by 2+ DISTINCT md files — payload of the
+    // find-shared command. refs are already deduped per md, so length =
+    // number of distinct notes. Existence on disk is deliberately NOT a
+    // filter here: find-shared reports reference RELATIONSHIPS, and a file
+    // cited by two notes that is ALSO missing is exactly the kind of entry
+    // worth surfacing (missing detection itself is owned by the
+    // scan-folder command). Keep the on-disk casing when the file exists.
+    const shared = [];
+    for (const [key, entry] of referenced) {
+      if (entry.refs.length > 1) {
+        const disk = inFolder.get(key);
+        shared.push({ path: disk || entry.path, refs: entry.refs.slice(), exists: !!disk });
+      }
+    }
+    shared.sort((a, b) => b.refs.length - a.refs.length || String(a.path).localeCompare(String(b.path)));
+
     return {
       root,
       scope: "folder",
       unused,
       missing,
+      shared,
+      // live Map references for the current-file view (scanCurrent) —
+      // internal use, never serialized by the JSON export
+      references: referenced, // normKey -> {path, refs}: every resolved reference
+      disk: inFolder, // normKey -> on-disk path (original casing)
       stats: {
         resources: inFolder.size,
         markdowns: mdFiles.length,
         referenced: referenced.size,
         unused: unused.length,
         missing: missing.length,
+        shared: shared.length,
+        sharedMissing: shared.reduce((n, s) => n + (s.exists ? 0 : 1), 0),
+      },
+    };
+  }
+
+  /**
+   * Current-file view for the check-current command: run the full-vault
+   * scan once, then slice `referenced` by the current md. Every local
+   * resource the note cites lands in exactly one bucket:
+   *   shared    — also cited by other notes (refs lists THOSE notes only)
+   *   exclusive — cited by this note alone (refs is empty)
+   * Existence on disk is reported, not filtered (missing entries are
+   * tagged red in the modal), consistent with the find-shared semantics.
+   * @param {string} mdPath path of the open md (case need not match the
+   *                        walker's disk casing — compared via normKey)
+   */
+  async scanCurrent(root, mdPath, onProgress, isAborted) {
+    const base = await this.scan(root, onProgress, isAborted);
+    if (!base) return null; // aborted mid-scan
+    const curKey = normKey(mdPath);
+    const shared = [];
+    const exclusive = [];
+    for (const [key, entry] of base.references) {
+      const i = entry.refs.findIndex((r) => normKey(r) === curKey);
+      if (i < 0) continue;
+      const others = entry.refs.filter((_, j) => j !== i);
+      const disk = base.disk.get(key);
+      const item = { path: disk || entry.path, refs: others, exists: !!disk };
+      (others.length ? shared : exclusive).push(item);
+    }
+    shared.sort((a, b) => b.refs.length - a.refs.length || String(a.path).localeCompare(String(b.path)));
+    exclusive.sort((a, b) => String(a.path).localeCompare(String(b.path)));
+    return {
+      root,
+      currentFile: mdPath,
+      shared,
+      exclusive,
+      stats: {
+        resources: base.stats.resources,
+        markdowns: base.stats.markdowns,
+        refs: shared.length + exclusive.length,
+        shared: shared.length,
+        exclusive: exclusive.length,
+        missing: shared.concat(exclusive).filter((s) => !s.exists).length,
       },
     };
   }
@@ -464,10 +572,11 @@ class ResourceScanner {
  * report modal (replaces fast-window + fast-table)
  * ------------------------------------------------------------------------ */
 class ReportModal extends Modal {
-  constructor(result, i18n) {
+  constructor(result, i18n, options = {}) {
     super({ className: "typ-resource-manager" });
     this.result = result;
     this.i18n = i18n;
+    this.mode = options.mode || "report"; // "report" | "shared"
     this.showPreview = true;
     this.suppressConfirm = false;
     this.root = result.root;
@@ -486,8 +595,12 @@ class ReportModal extends Modal {
     // note: Modal.setHeader builds its node via core's `html` template,
     // which does NOT escape — set via textContent afterwards for safety
     this.setHeader("resource-manager");
-    this.header.textContent =
-      this.i18n.t.reportTitle + " — " + this._rel(this.root);
+    const t = this.i18n.t;
+    const headTitle = this.mode === "shared" ? t.titleShared
+      : this.mode === "current" ? t.curTitle
+      : t.reportTitle;
+    const headTail = this.mode === "current" ? this._rel(this.result.currentFile) : this._rel(this.root);
+    this.header.textContent = headTitle + " — " + headTail;
     this.setBody((body) => this._renderBody(body));
     this.setFooter((footer) => this._renderFooter(footer));
     // drop the DOM node when closed: close() only hides it
@@ -499,20 +612,43 @@ class ReportModal extends Modal {
 
   _renderBody(body) {
     body.innerHTML = "";
+    if (this.mode === "current") {
+      const t = this.i18n.t;
+      body.appendChild(this._section("rm-cur-shared", t.titleCurShared, this.result.shared.length, (table) => {
+        for (const item of this.result.shared) {
+          table.appendChild(this._sharedRow(item));
+        }
+      }, { preview: true, ops: false, emptyKey: "emptyCurShared", tbodyCls: "rm-cur-shared-rows" }));
+      body.appendChild(this._section("rm-cur-exclusive", t.titleCurExclusive, this.result.exclusive.length, (table) => {
+        for (const item of this.result.exclusive) {
+          table.appendChild(this._sharedRow(item, t.onlyCurrent));
+        }
+      }, { preview: true, ops: false, emptyKey: "emptyCurExclusive", tbodyCls: "rm-cur-exclusive-rows" }));
+      return;
+    }
+    if (this.mode === "shared") {
+      body.appendChild(this._section("rm-shared", this.i18n.t.titleShared, this.result.shared.length, (table) => {
+        for (const item of this.result.shared) {
+          table.appendChild(this._sharedRow(item));
+        }
+      }, { preview: true, ops: false, emptyKey: "emptyShared", tbodyCls: "rm-shared-rows" }));
+      return;
+    }
     body.appendChild(this._section("rm-unused", this.i18n.t.titleUnused, this.result.unused.length, (table) => {
       for (const p of this.result.unused) {
         table.appendChild(this._unusedRow(p));
       }
-    }, true));
+    }, { preview: true, ops: true, emptyKey: "emptyUnused", tbodyCls: "rm-unused-rows" }));
     body.appendChild(this._section("rm-missing", this.i18n.t.titleMissing, this.result.missing.length, (table) => {
       for (const item of this.result.missing) {
         table.appendChild(this._missingRow(item));
       }
-    }, false));
+    }, { preview: false, ops: false, emptyKey: "emptyMissing", tbodyCls: "rm-missing-rows" }));
   }
 
-  _section(cls, title, count, fillTable, hasOps) {
+  _section(cls, title, count, fillTable, opts = {}) {
     const t = this.i18n.t;
+    const { preview = false, ops = false, emptyKey, tbodyCls } = opts;
     const section = document.createElement("div");
     section.className = "rm-section " + cls;
     const h = document.createElement("div");
@@ -523,7 +659,7 @@ class ReportModal extends Modal {
     if (count === 0) {
       const empty = document.createElement("div");
       empty.className = "rm-empty";
-      empty.textContent = hasOps ? t.emptyUnused : t.emptyMissing;
+      empty.textContent = emptyKey ? t[emptyKey] : ops ? t.emptyUnused : t.emptyMissing;
       section.appendChild(empty);
       return section;
     }
@@ -533,13 +669,13 @@ class ReportModal extends Modal {
     const thead = document.createElement("thead");
     thead.innerHTML =
       "<tr><th>" + escapeHtml(t.colNo) + "</th>" +
-      (hasOps ? '<th class="rm-preview">' + escapeHtml(t.colPreview) + "</th>" : "") +
+      (preview ? '<th class="rm-preview">' + escapeHtml(t.colPreview) + "</th>" : "") +
       "<th>" + escapeHtml(t.colPath) + "</th>" +
-      (hasOps ? "<th>" + escapeHtml(t.colOps) + "</th>" : "<th>" + escapeHtml(t.colRefBy) + "</th>") +
+      (ops ? "<th>" + escapeHtml(t.colOps) + "</th>" : "<th>" + escapeHtml(t.colRefBy) + "</th>") +
       "</tr>";
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
-    tbody.className = hasOps ? "rm-unused-rows" : "rm-missing-rows";
+    tbody.className = tbodyCls || (ops ? "rm-unused-rows" : "rm-missing-rows");
     fillTable(tbody);
     table.appendChild(tbody);
     section.appendChild(table);
@@ -596,8 +732,52 @@ class ReportModal extends Modal {
     return tr;
   }
 
+  _sharedRow(item, emptyRefText) {
+    const t = this.i18n.t;
+    const tr = document.createElement("tr");
+    if (!item.exists) tr.className = "rm-row-missing";
+    const idx = document.createElement("td");
+    idx.className = "rm-idx";
+    // same preview cell convention as unused rows (class on td, not the
+    // img); a missing file has nothing to preview — show a dash instead
+    // of a broken-image icon
+    const preview = document.createElement("td");
+    preview.className = "rm-preview";
+    if (item.exists) {
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.src = toFileURL(item.path);
+      img.alt = item.path;
+      preview.appendChild(img);
+    } else {
+      preview.textContent = "—";
+      preview.title = t.missingTag;
+    }
+    const fileTd = document.createElement("td");
+    fileTd.className = "rm-path";
+    fileTd.title = item.path;
+    // show the distinct-note count next to the path, e.g. "cat.png  (3)";
+    // rows with no other citing notes (check-current exclusive) carry no
+    // count — the "only this note" text sits in the ref column instead
+    fileTd.textContent = this._rel(item.path) + (item.refs.length ? "  (" + item.refs.length + ")" : "");
+    if (!item.exists) {
+      const tag = document.createElement("span");
+      tag.className = "rm-missing-tag";
+      tag.textContent = t.missingTag;
+      fileTd.appendChild(tag);
+    }
+    const refTd = document.createElement("td");
+    refTd.className = "rm-ref";
+    refTd.title = item.refs.join("\n");
+    refTd.textContent = item.refs.length
+      ? item.refs.map((r) => this._rel(r)).join(", ")
+      : (emptyRefText || "");
+    tr.append(idx, preview, fileTd, refTd);
+    return tr;
+  }
+
   _renumber() {
-    this.modal.querySelectorAll(".rm-unused-rows, .rm-missing-rows").forEach((tbody) => {
+    this.modal.querySelectorAll(".rm-unused-rows, .rm-missing-rows, .rm-shared-rows, .rm-cur-shared-rows, .rm-cur-exclusive-rows").forEach((tbody) => {
       tbody.querySelectorAll("tr").forEach((tr, i) => {
         tr.querySelector(".rm-idx").textContent = i + 1;
       });
@@ -615,9 +795,16 @@ class ReportModal extends Modal {
 
     const stat = document.createElement("span");
     stat.className = "rm-stat";
-    stat.textContent = t.statScanned
-      .replace("{n}", this.result.stats.resources)
-      .replace("{m}", this.result.stats.markdowns);
+    const statText = this.mode === "current"
+      ? t.statCurrent
+          .replace("{n}", this.result.stats.refs)
+          .replace("{s}", this.result.stats.shared)
+          .replace("{e}", this.result.stats.exclusive)
+          .replace("{m}", this.result.stats.missing)
+      : t.statScanned
+          .replace("{n}", this.result.stats.resources)
+          .replace("{m}", this.result.stats.markdowns);
+    stat.textContent = statText;
     footer.appendChild(stat);
 
     const spacer = document.createElement("span");
@@ -691,16 +878,49 @@ class ReportModal extends Modal {
   async _export() {
     const bridge = jsBridge();
     const t = this.i18n.t;
-    const report = {
-      plugin: "resource-manager",
-      generatedAt: new Date().toISOString(),
-      root: this.root,
-      scope: this.result.scope,
-      stats: this.result.stats,
-      unused: this.result.unused.slice(),
-      missing: this.result.missing.map((m) => ({ path: m.path, referencedBy: m.refs.slice() })),
-    };
-    const defaultName = "resource-report-" + new Date().toISOString().slice(0, 10) + ".json";
+    let report;
+    let namePrefix;
+    if (this.mode === "current") {
+      report = {
+        plugin: "resource-manager",
+        generatedAt: new Date().toISOString(),
+        root: this.root,
+        currentFile: this.result.currentFile,
+        scope: "current-file",
+        stats: this.result.stats,
+        shared: this.result.shared.map((s) => ({ path: s.path, exists: s.exists, referencedBy: s.refs.slice() })),
+        exclusive: this.result.exclusive.map((s) => ({ path: s.path, exists: s.exists })),
+      };
+      namePrefix = "current-attachments-";
+    } else if (this.mode === "shared") {
+      report = {
+        plugin: "resource-manager",
+        generatedAt: new Date().toISOString(),
+        root: this.root,
+        scope: "shared-references",
+        stats: {
+          resources: this.result.stats.resources,
+          markdowns: this.result.stats.markdowns,
+          shared: this.result.shared.length,
+          sharedMissing: this.result.shared.filter((s) => !s.exists).length,
+          references: this.result.shared.reduce((n, s) => n + s.refs.length, 0),
+        },
+        shared: this.result.shared.map((s) => ({ path: s.path, exists: s.exists, referencedBy: s.refs.slice() })),
+      };
+      namePrefix = "shared-references-";
+    } else {
+      report = {
+        plugin: "resource-manager",
+        generatedAt: new Date().toISOString(),
+        root: this.root,
+        scope: this.result.scope,
+        stats: this.result.stats,
+        unused: this.result.unused.slice(),
+        missing: this.result.missing.map((m) => ({ path: m.path, referencedBy: m.refs.slice() })),
+      };
+      namePrefix = "resource-report-";
+    }
+    const defaultName = namePrefix + new Date().toISOString().slice(0, 10) + ".json";
     let target = path.join(this.root, defaultName);
     if (bridge) {
       try {
@@ -828,6 +1048,21 @@ class ResourceManagerPlugin extends Plugin {
       callback: () => this._startScan(this.app.vault.path),
     });
 
+    this.registerCommand({
+      id: "find-shared",
+      title: this.i18n.t.cmdFindShared,
+      scope: "editor",
+      // palette-only on purpose: keeps Ctrl+Alt+R unambiguous
+      callback: () => this._startScan(this.app.vault.path, { mode: "shared" }),
+    });
+
+    this.registerCommand({
+      id: "check-current",
+      title: this.i18n.t.cmdCheckCurrent,
+      scope: "editor",
+      callback: () => this._startCurrentScan(),
+    });
+
     this.registerSettingTab(new ResourceManagerSettingTab(this));
   }
 
@@ -838,7 +1073,35 @@ class ResourceManagerPlugin extends Plugin {
     }
   }
 
-  async _startScan(root) {
+  /**
+   * check-current entry: resolve the open file (core exposes it as
+   * `app.workspace.activeFile` — `File.filePath ?? File.bundle.filePath`,
+   * null for an unsaved draft), validate it belongs to the scan universe,
+   * then reuse the _startScan machinery with mode "current".
+   */
+  _startCurrentScan() {
+    const t = this.i18n.t;
+    const root = this.app.vault.path;
+    if (!root) return Notice.warning(t.scanEmpty);
+    const cur = this.app.workspace && this.app.workspace.activeFile;
+    if (!cur) return Notice.warning(t.noCurrentFile);
+    if (!this.scanner._extSet("markdownExts").has(path.extname(cur).toLowerCase())) {
+      return Notice.warning(t.curNotMd);
+    }
+    const rel = path.relative(root, cur);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
+      return Notice.warning(t.curOutsideVault);
+    }
+    // ancestor folder names must not hit the ignore list — the walker
+    // would never index the file, silently producing an empty view
+    const ignore = this.scanner._folderSet();
+    if (rel.split(/[\\/]+/).slice(0, -1).some((seg) => ignore.has(seg))) {
+      return Notice.warning(t.curIgnored);
+    }
+    this._startScan(root, { mode: "current", currentFile: cur });
+  }
+
+  async _startScan(root, opts = {}) {
     if (!root) return Notice.warning(this.i18n.t.scanEmpty);
     const t = this.i18n.t;
     const notice = Notice.info(t.scanning.replace("{n}", 0), 0);
@@ -864,17 +1127,27 @@ class ResourceManagerPlugin extends Plugin {
       }, SCAN_TIMEOUT_MS);
     });
     try {
-      const result = await Promise.race([
-        this.scanner.scan(root, tick, () => timedOut),
-        timeout,
-      ]);
+      const scanTask = opts.mode === "current"
+        ? this.scanner.scanCurrent(root, opts.currentFile, tick, () => timedOut)
+        : this.scanner.scan(root, tick, () => timedOut);
+      const result = await Promise.race([scanTask, timeout]);
       notice.close();
       if (!result) return; // aborted mid-scan; the timeout path already notified
-      if (result.stats.unused === 0 && result.stats.missing === 0) {
+      if (opts.mode === "current") {
+        if (result.stats.refs === 0) {
+          Notice.success(t.noCurrentRefs);
+          return;
+        }
+      } else if (opts.mode === "shared") {
+        if (result.stats.shared === 0) {
+          Notice.success(t.noShared);
+          return;
+        }
+      } else if (result.stats.unused === 0 && result.stats.missing === 0) {
         Notice.success(t.allClean);
         return;
       }
-      this._modal = new ReportModal(result, this.i18n);
+      this._modal = new ReportModal(result, this.i18n, { mode: opts.mode || "report" });
       this._modal.onDispose(() => { if (this._modal) this._modal = null; });
       this._modal.open();
     } catch (e) {
