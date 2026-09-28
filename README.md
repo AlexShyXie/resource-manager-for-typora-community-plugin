@@ -5,6 +5,7 @@
 将 [obgnail/typora_plugin](https://github.com/obgnail/typora_plugin) 的 `resource_manager` 插件移植到 [typora-community-plugin](https://github.com/typora-community-plugin/typora-community-plugin) 生态。功能与原版一致：
 
 ## 功能概览
+> 强烈推荐使用标准习惯：所有图片、附件的引用，都使用当前笔记的相对路径，置于同笔记的images/或assets/文件夹下
 
 基于 Typora **当前打开的文件夹**（挂载目录）工作，提供三个命令（F1 命令面板均可触发）：
 
