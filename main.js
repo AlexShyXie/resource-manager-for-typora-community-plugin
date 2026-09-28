@@ -751,7 +751,7 @@ class ReportModal extends Modal {
       img.alt = item.path;
       preview.appendChild(img);
     } else {
-      preview.textContent = "—";
+      preview.textContent = "❓";
       preview.title = t.missingTag;
     }
     const fileTd = document.createElement("td");
