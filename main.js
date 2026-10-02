@@ -1097,7 +1097,7 @@ class ResourceManagerPlugin extends Plugin {
     }
     // ancestor folder names must not hit the ignore list — the walker
     // would never index the file, silently producing an empty view
-    const ignore = this.scanner._folderSet();
+    const ignore = new Set(this.scanner._folderSet());
     if (rel.split(/[\\/]+/).slice(0, -1).some((seg) => ignore.has(seg))) {
       return Notice.warning(t.curIgnored);
     }
